@@ -8,7 +8,7 @@ from typing import Callable, Collection
 
 import safetensors
 import torch
-from freetoken.utils import download_hf_weight
+from freetoken.utils import div_even, download_hf_weight
 from tqdm import tqdm
 
 LayerToBank = Callable[[int, object], int | None]
@@ -79,6 +79,29 @@ def _bank_layer(spec: Nvfp4ExpertSourceSpec, layer: int, config) -> int | None:
             f"is outside [0, {num_layers})"
         )
     return bank_layer
+
+
+def _tp_slice() -> tuple[int, int] | None:
+    """Return (tp_size, tp_rank) for intermediate-axis sharding, or None at TP=1."""
+    from freetoken.distributed import try_get_tp_info
+
+    tp = try_get_tp_info()
+    if tp is None or tp.size == 1:
+        return None
+    return tp.size, tp.rank
+
+
+def _tp_shard(role: str, tensor: torch.Tensor, inter: int, tp_size: int, tp_rank: int):
+    """Shard gate/up rows and down columns: 2 FP4 codes/byte, 16 codes/scale."""
+    if role.endswith(("_global", "_input")):
+        return tensor
+    n = div_even(inter, tp_size)
+    assert n % 16 == 0, f"NVFP4 TP shard {n} must cover whole 16-wide scale blocks"
+    lo = tp_rank * n
+    if role.startswith("down"):
+        d = 2 if role == "down" else 16
+        return tensor[:, lo // d : (lo + n) // d]
+    return tensor[lo : lo + n]
 
 
 def _kind_suffix(kind: str) -> str:
@@ -165,7 +188,19 @@ def iter_nvfp4_expert_pieces(
         for name, tensor in iter_expert_tensors_parallel(folder, lambda n: n in wanted, workers=workers, chunk=chunk):
             yield name, _ingest(spec, act, wanted[name][2], tensor)
 
-    return per_expert_pieces(_parallel() if parallel else _serial(), wanted.get, tensors_per_expert=per_expert)
+    stream = _parallel() if parallel else _serial()
+    shard = _tp_slice()
+    if shard is not None:
+        tp_size, tp_rank = shard
+        inter = config.moe_intermediate_size
+        base = stream
+
+        def _sharded():
+            for name, tensor in base:
+                yield name, _tp_shard(wanted[name][2], tensor, inter, tp_size, tp_rank)
+
+        stream = _sharded()
+    return per_expert_pieces(stream, wanted.get, tensors_per_expert=per_expert)
 
 
 __all__ = ["Nvfp4ExpertSourceSpec", "iter_nvfp4_expert_pieces"]

@@ -7,6 +7,8 @@ so no BF16 copy of the experts is ever materialized.
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 from freetoken.kernel import moe_sum_reduce_triton, nvfp4_moe
@@ -47,12 +49,13 @@ def _fused_experts_decode_nvfp4(
     )
     ic2 = torch.empty((M * top_k, inter), device=dev, dtype=dt)
     gated_act_and_mul(activation, ic1.view(-1, two_i), ic2, alpha=act_alpha, limit=act_limit)
-    ic3 = torch.empty((M, top_k, H), device=dev, dtype=dt)
+    output_dtype = torch.float32 if os.environ.get("FREETOKEN_TP_PRECISE") else dt
+    ic3 = torch.empty((M, top_k, H), device=dev, dtype=output_dtype)
     gemm_fn(
         ic2, down_packed, down_scale, down_global,
         ic3, topk_weights, topk_ids, not apply_router_weight_on_input, True,
     )
-    out = torch.empty_like(hidden_states)
+    out = torch.empty_like(hidden_states, dtype=output_dtype)
     moe_sum_reduce_triton(ic3, out)
     return out
 
@@ -146,13 +149,14 @@ def fused_experts_nvfp4(
     )
     ic2 = torch.empty((M * top_k, inter), device=dev, dtype=dt)
     gated_act_and_mul(activation, ic1.view(-1, two_i), ic2, alpha=act_alpha, limit=act_limit)
-    ic3 = torch.empty((M, top_k, H), device=dev, dtype=dt)
+    output_dtype = torch.float32 if os.environ.get("FREETOKEN_TP_PRECISE") else dt
+    ic3 = torch.empty((M, top_k, H), device=dev, dtype=output_dtype)
     nvfp4_moe.prefill_gemm(
         ic2, down_packed, down_scale, down_global, ic3,
         tw, sorted_ids, expert_ids, ntpp, num_valid, 1,
         not apply_router_weight_on_input, cfg,
     )
-    out = torch.empty_like(hidden_states)
+    out = torch.empty_like(hidden_states, dtype=output_dtype)
     moe_sum_reduce_triton(ic3, out)
     return out
 

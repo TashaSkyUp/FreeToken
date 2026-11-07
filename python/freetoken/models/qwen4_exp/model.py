@@ -15,6 +15,7 @@ immediate combine::
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, List
 
 import torch
@@ -77,7 +78,8 @@ class Qwen4ExpDecoderLayer(BaseOP):
     @nvtx_annotate("Layer_{}", layer_id_field="_layer_id")
     def forward(self, hidden: torch.Tensor, batch: Batch) -> torch.Tensor:
         if self.ple is not None:
-            hidden = hidden + self.ple.forward(hidden, batch)
+            ple_input = hidden.to(self.attn_hyper_connection.hc_norm.weight.dtype)
+            hidden = hidden + self.ple.forward(ple_input, batch)
         block_input, inject = self.attn_hyper_connection.mix(hidden)
         if self._is_linear:
             block_output = self.linear_attn.forward(block_input)
@@ -115,6 +117,8 @@ class Qwen4ExpModel(BaseOP):
     def forward(self, input_ids: torch.Tensor, batch: Batch) -> torch.Tensor:
         hidden = embed_input_ids(self.embed_tokens, input_ids, batch)
         hidden = hidden.repeat(1, self.hc_count)
+        if os.environ.get("FREETOKEN_RESIDUAL_FP32"):
+            hidden = hidden.float()
         meta = None
         if self._ple:
             from .ple import build_ple_metadata, commit_ngram_context

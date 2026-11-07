@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import List
 
 import torch
@@ -86,12 +87,15 @@ class LinearColParallelMerged(_LinearTPImpl):
         output_sizes: List[int],
         has_bias: bool,
         *,
+        local_output_sizes: List[int] | None = None,
         quant_config: QuantConfig | None = None,
         prefix: str = "",
     ):
-        # check that all output sizes are divisible by tp_size
+        # GQA can replicate KV heads across ranks instead of dividing their row count.
         tp_info = get_tp_info()
-        tp_output_sizes = [div_even(size, tp_info.size) for size in output_sizes]
+        if local_output_sizes is None:
+            local_output_sizes = [div_even(size, tp_info.size) for size in output_sizes]
+        tp_output_sizes = local_output_sizes
         output_size = sum(output_sizes)
         tp_output_size = sum(tp_output_sizes)
         super().__init__(
@@ -150,9 +154,17 @@ class LinearOProj(_LinearTPImpl):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.quant_method.apply(self, x)
+        precise = bool(os.environ.get("FREETOKEN_TP_PRECISE"))
+        if precise and self.weight.dtype == x.dtype == torch.bfloat16:
+            from freetoken.kernel.triton.stable_linear import fp32_linear
+
+            y = fp32_linear(x, self.weight, self.bias)
+        else:
+            y = self.quant_method.apply(self, x)
         if self._tp_size > 1:
             y = self._comm.all_reduce(y)
+        if precise and not os.environ.get("FREETOKEN_RESIDUAL_FP32"):
+            return y.to(x.dtype)
         return y
 
 
@@ -177,7 +189,15 @@ class LinearRowParallel(_LinearTPImpl):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.quant_method.apply(self, x)
+        precise = bool(os.environ.get("FREETOKEN_TP_PRECISE"))
+        if precise and self.weight.dtype == x.dtype == torch.bfloat16:
+            from freetoken.kernel.triton.stable_linear import fp32_linear
+
+            y = fp32_linear(x, self.weight, self.bias)
+        else:
+            y = self.quant_method.apply(self, x)
         if self._tp_size > 1:
             y = self._comm.all_reduce(y)
+        if precise and not os.environ.get("FREETOKEN_RESIDUAL_FP32"):
+            return y.to(x.dtype)
         return y

@@ -10,6 +10,7 @@ back at the store, so they agree to fp32 rounding.
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Tuple
 
 import torch
@@ -122,18 +123,22 @@ class GatedResidual(BaseOP):
 
     def _mix_kernel(self, R: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor | None]:
         rn = grouped_gemma_rmsnorm(R, self.hc_norm.weight, self.hc_norm.eps, self.hc_count)
+        if os.environ.get("FREETOKEN_RESIDUAL_FP32"):
+            rn = rn.to(self.hc_norm.weight.dtype)
         lora, s = self._down(rn)
         gate = self.input_mix_weight_up.forward(hc_silu(lora, self.hc_count))
         return hc_gate_mix(rn, gate, self.hc_count), s
 
     def _mix_torch(self, R: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor | None]:
         rn = grouped_plus_one_rms_norm(R, self.hc_norm.weight, self.hc_norm.eps, self.hc_count)
+        if os.environ.get("FREETOKEN_RESIDUAL_FP32"):
+            rn = rn.to(self.hc_norm.weight.dtype)
         lora, s = self._down(rn)
         lora = F.silu(lora.float() / self.hc_count)
-        gate = self.input_mix_weight_up.forward(lora.to(R.dtype))
+        gate = self.input_mix_weight_up.forward(lora.to(rn.dtype))
         mixed = torch.sigmoid(gate.float()).unflatten(-1, (self.hc_count, self.hidden_size))
         mixed = mixed * rn.float().unflatten(-1, (self.hc_count, self.hidden_size))
-        return mixed.mean(-2).to(R.dtype), s
+        return mixed.mean(-2).to(rn.dtype), s
 
     def _combine_torch(self, R: torch.Tensor, y: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
         inject = 2.0 * torch.sigmoid(s.float() / self.hc_count)

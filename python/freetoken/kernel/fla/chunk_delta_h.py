@@ -321,7 +321,13 @@ def chunk_gated_delta_rule_fwd_h(
         )
     assert K <= 256, "current kernel does not support head dimension larger than 256."
 
-    h = k.new_empty(B, NT, H, V, K)
+    # Prefix snapshots reuse h as recurrent state; do not round an fp32 pool to bf16.
+    state_dtype = (
+        initial_state.dtype
+        if initial_state is not None and os.environ.get("FREETOKEN_GDN_SNAPSHOT_FP32")
+        else k.dtype
+    )
+    h = k.new_empty(B, NT, H, V, K, dtype=state_dtype)
 
     v_new = torch.empty_like(u) if save_new_value else None
 
