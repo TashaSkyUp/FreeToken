@@ -103,7 +103,10 @@ Building with the older local HIP SDK required
 failed. The successful rebuild log is retained; no C++ source compatibility
 change is included here.
 
-## Historical v1 evidence
+## Historical v1 evidence (128-token cap)
+
+This section retains the original prompts and 128-token measurements. The latest
+revised-prompt results are in [the audited 1,024-token rerun](#audited-prompts-and-1024-token-rerun).
 
 The initial three regression prompts were each requested three times (one cold,
 two repeats). Before the precision profile, 3/9 cross-TP responses differed;
@@ -119,8 +122,11 @@ tokens. All 100 core requests were uncached in both modes.
   24 have other wording, format or content differences.
 - 100/100 finish reasons agree; 85/100 completion-token counts agree.
   Seventeen responses per mode hit the 128-token cap.
-- Strict known-answer/format checks pass 35/42 in each mode. Matching text is
-  not evidence of a correct answer: common wrong and incomplete answers occur.
+- Strict known-answer/format checks pass **35/41 valid cases** in each mode.
+  The frozen summary originally reported 35/42; its Unicode-copy case had an
+  invalid NFD key for NFC-normalized input and is excluded from the denominator.
+  Matching text is not evidence of a correct answer: common wrong and incomplete
+  answers occur.
 - Nine of ten repeat attempts actually hit the prefix cache in each mode.
   Initial/repeated text matches in 7/10 TP=1 and 8/10 TP=2 attempts; the
   differences preserve parsed JSON values. The remaining attempt misses the
@@ -174,7 +180,7 @@ server logs, source hashes, the historical patch, judge ratings and their
 methodology. It excludes model weights, authentication material and raw Codex
 CLI event logs. Its manifest hashes every member.
 
-## Follow-up v2 experiment
+## Historical v2 experiment (128-token cap)
 
 The first remaining difference was an FP32 attention output projection. Small
 rounding differences then crossed BF16 normalization boundaries and grew through
@@ -210,8 +216,12 @@ with tracing and replay disabled, at the same greedy settings and 128-token cap.
 | --- | ---: | ---: |
 | Exact core text pairs | 74/100 | 100/100 |
 | Divergent core pairs | 26 | 0 |
-| Strict known-answer/format checks, TP=1 | 35/42 | 34/42 |
-| Strict known-answer/format checks, TP=2 | 35/42 | 34/42 |
+| Strict known-answer/format checks, TP=1, valid cases | 35/41 | 34/41 |
+| Strict known-answer/format checks, TP=2, valid cases | 35/41 | 34/41 |
+
+The frozen original summaries reported 35/42 and 34/42. Both counted the invalid
+Unicode-copy case; the table excludes it. Those historical archives are unchanged.
+The revised NFC-stable cohort below has 42 valid checks and is a separate comparison.
 
 Divergent-output count fell by 100.0%. All core requests were uncached.
 V2 also changes TP=1 arithmetic: 35/100 TP1 texts change between profiles. V2 TP2 matches the original V1 TP1 text in 65/100 cases. The 100-pair agreement figure compares TP modes with V2 enabled in both.
@@ -405,6 +415,10 @@ and performance data are hidden. Both comparison sets use this same audited coho
 
 Across both presentations, profile correctness preferences have 93 ties, 2 favoring V1 and 3 favoring V2; 2 differ between presentations. All scores use 0-4 anchors.
 
+V2 TP1 appears in both comparisons with the same saved outputs. Its absolute
+ratings differ because each comparison used independent judge calls; scores
+from separate comparisons should not be treated as one calibrated quality scale.
+
 Accepted evaluations / actual CLI invocations / identical-output control errors: profile-quality: 200 / 200 / 0; tp-quality: 200 / 200 / 0.
 Model judgments are secondary evidence. One evaluation per presentation confounds order
 effects with judge variance. New prompts, a larger cap and a revised rubric prevent
@@ -426,3 +440,22 @@ all frozen prompts, audits, corrected-key provenance, 440 responses, 400 accepte
 judgments, every invocation receipt, timing/SSE data, source/library hashes and logs.
 Its manifest verifies every payload. Weights, credentials and raw Codex CLI events
 are omitted. All profiles remain opt-in, and the scope limitations above still apply.
+
+### Statistics audit
+
+An independent recomputation on November 8, 2026 checked the published counts,
+fixed-check results, all latency/resource distributions and both sets of judge
+ratings directly against frozen records, without importing the report helpers.
+It reconstructed all 440 responses from raw SSE, verified all 400 A/B mappings
+and final ratings, and checked every one of the archive's 2,612 payload hashes.
+The current numerical summaries agree with that recomputation. The historical
+text/format totals, published timing tables and mean judge ratings were also
+recomputed; the corrected historical denominators now appear beside those results.
+
+The [audit evidence](../benchmarks/evidence/qwen4-tp-r9700-v3-statistics-audit.tar.gz)
+contains the independent script, detailed results, source hashes and review scope.
+This was a record audit; no inference or judging calls were repeated. Historical
+aligned-logit metrics were recomputed from the saved FP32 arrays. Operator
+measurements were traced to the saved probe records without rerunning GPU kernels.
+The original v3 archive remains unchanged at SHA256
+`47ce5129da08d105d05afc39fa69192464e445a1f8bf65422fecd38fd7efc2f3`.
