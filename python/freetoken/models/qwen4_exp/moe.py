@@ -43,9 +43,9 @@ class Qwen4ExpMoE(Qwen3_5MoE):
         gate = shared_gate_sigmoid(hidden_states, self.shared_expert_gate.weight.view(-1))
         se, ex = self.shared_expert, self.experts
         if os.environ.get("FREETOKEN_TP_PRECISE") and isinstance(ex, OffloadMoELayer):
-            from freetoken.kernel.triton.stable_linear import fp32_linear
+            from freetoken.kernel.triton.stable_linear import reduction_linear
 
-            shared = fp32_linear(
+            shared = reduction_linear(
                 silu_and_mul(se.gate_up_proj.forward(hidden_states)),
                 se.down_proj.weight,
             )
@@ -56,6 +56,8 @@ class Qwen4ExpMoE(Qwen3_5MoE):
             out = shared_gate_mul_add(routed, shared, gate)
             if self._tp_size > 1:
                 out = self._comm.all_reduce(out)
+            if out.dtype == torch.float64:
+                out = out.float()
             if not os.environ.get("FREETOKEN_RESIDUAL_FP32"):
                 out = out.to(hidden_states.dtype)
             return out.view(num_tokens, hidden_dim)

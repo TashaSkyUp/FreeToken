@@ -50,6 +50,8 @@ def _fused_experts_decode_nvfp4(
     ic2 = torch.empty((M * top_k, inter), device=dev, dtype=dt)
     gated_act_and_mul(activation, ic1.view(-1, two_i), ic2, alpha=act_alpha, limit=act_limit)
     output_dtype = torch.float32 if os.environ.get("FREETOKEN_TP_PRECISE") else dt
+    if output_dtype == torch.float32 and os.environ.get("FREETOKEN_TP_REDUCTION_FP64"):
+        output_dtype = torch.float64
     ic3 = torch.empty((M, top_k, H), device=dev, dtype=output_dtype)
     gemm_fn(
         ic2, down_packed, down_scale, down_global,
@@ -150,6 +152,8 @@ def fused_experts_nvfp4(
     ic2 = torch.empty((M * top_k, inter), device=dev, dtype=dt)
     gated_act_and_mul(activation, ic1.view(-1, two_i), ic2, alpha=act_alpha, limit=act_limit)
     output_dtype = torch.float32 if os.environ.get("FREETOKEN_TP_PRECISE") else dt
+    if output_dtype == torch.float32 and os.environ.get("FREETOKEN_TP_REDUCTION_FP64"):
+        output_dtype = torch.float64
     ic3 = torch.empty((M, top_k, H), device=dev, dtype=output_dtype)
     nvfp4_moe.prefill_gemm(
         ic2, down_packed, down_scale, down_global, ic3,

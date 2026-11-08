@@ -98,8 +98,9 @@ def _gate_mul_add_kernel(
         tl.extra.cuda.gdc_wait()
 
     gate = tl.load(gate_ptr + row)
-    routed = tl.load(routed_ptr + row * stride_r + offs, mask=mask, other=0.0).to(tl.float32)
-    shared = tl.load(shared_ptr + row * stride_s + offs, mask=mask, other=0.0).to(tl.float32)
+    acc_dtype: tl.constexpr = tl.float64 if routed_ptr.dtype.element_ty == tl.float64 else tl.float32
+    routed = tl.load(routed_ptr + row * stride_r + offs, mask=mask, other=0.0).to(acc_dtype)
+    shared = tl.load(shared_ptr + row * stride_s + offs, mask=mask, other=0.0).to(acc_dtype)
 
     if launch_pdl:
         tl.extra.cuda.gdc_launch_dependents()

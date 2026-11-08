@@ -120,7 +120,7 @@ def _leading(t):
     return t.shape[0], t.shape[1], t.stride(0), t.stride(1)
 
 
-def _rmsnorm(input, weight, eps, out, gemma: bool):
+def _rmsnorm(input, weight, eps, out, gemma: bool, tuning_rows: int | None = None):
     import torch
 
     assert weight.ndim == 1 and input.shape[-1] == weight.shape[0]
@@ -130,7 +130,7 @@ def _rmsnorm(input, weight, eps, out, gemma: bool):
         # 2D hidden norms or 3D per-head qk-norms). reshape may copy for a strided
         # input, so this path is out-of-place only.
         assert out is None, "rmsnorm on <2D/>3D input must be out-of-place"
-        return _rmsnorm(input.reshape(-1, H), weight, eps, None, gemma).reshape(input.shape)
+        return _rmsnorm(input.reshape(-1, H), weight, eps, None, gemma, tuning_rows).reshape(input.shape)
     assert input.stride(-1) == 1  # norm axis must be unit-stride (as flashinfer requires)
     if out is None:
         out = torch.empty_like(input)
@@ -146,7 +146,7 @@ def _rmsnorm(input, weight, eps, out, gemma: bool):
         out, input, weight, eps, H, sxa, sxb, soa, sob,
         CONTIG=contig, ENABLE_PDL=pdl, GEMMA=gemma,
         **({} if is_rocm() else {"launch_pdl": pdl}),
-        num_warps=_num_warps(A * B), num_stages=1,
+        num_warps=_num_warps(A * B if tuning_rows is None else tuning_rows), num_stages=1,
     )
     return out
 
@@ -155,10 +155,11 @@ def rmsnorm(input, weight, eps: float = 1e-6, out=None, enable_pdl: bool = False
     return _rmsnorm(input, weight, eps, out, gemma=False)
 
 
-def gemma_rmsnorm(input, weight, eps: float = 1e-6, out=None, enable_pdl: bool = False):
+def gemma_rmsnorm(input, weight, eps: float = 1e-6, out=None, enable_pdl: bool = False,
+                  *, tuning_rows: int | None = None):
     """(1 + w)-scaled RMSNorm (Gemma/MiniMax-M3 semantics: the checkpoint stores
     ``scale - 1``); drop-in for flashinfer's ``norm.gemma_rmsnorm``."""
-    return _rmsnorm(input, weight, eps, out, gemma=True)
+    return _rmsnorm(input, weight, eps, out, gemma=True, tuning_rows=tuning_rows)
 
 
 def _fused_add_rmsnorm(input, residual, weight, eps, gemma: bool):

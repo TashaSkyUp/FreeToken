@@ -156,13 +156,15 @@ class LinearOProj(_LinearTPImpl):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         precise = bool(os.environ.get("FREETOKEN_TP_PRECISE"))
         if precise and self.weight.dtype == x.dtype == torch.bfloat16:
-            from freetoken.kernel.triton.stable_linear import fp32_linear
+            from freetoken.kernel.triton.stable_linear import reduction_linear
 
-            y = fp32_linear(x, self.weight, self.bias)
+            y = reduction_linear(x, self.weight, self.bias)
         else:
             y = self.quant_method.apply(self, x)
         if self._tp_size > 1:
             y = self._comm.all_reduce(y)
+        if precise and os.environ.get("FREETOKEN_TP_REDUCTION_FP64") and y.dtype == torch.float64:
+            y = y.float()
         if precise and not os.environ.get("FREETOKEN_RESIDUAL_FP32"):
             return y.to(x.dtype)
         return y
@@ -191,13 +193,15 @@ class LinearRowParallel(_LinearTPImpl):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         precise = bool(os.environ.get("FREETOKEN_TP_PRECISE"))
         if precise and self.weight.dtype == x.dtype == torch.bfloat16:
-            from freetoken.kernel.triton.stable_linear import fp32_linear
+            from freetoken.kernel.triton.stable_linear import reduction_linear
 
-            y = fp32_linear(x, self.weight, self.bias)
+            y = reduction_linear(x, self.weight, self.bias)
         else:
             y = self.quant_method.apply(self, x)
         if self._tp_size > 1:
             y = self._comm.all_reduce(y)
+        if precise and os.environ.get("FREETOKEN_TP_REDUCTION_FP64") and y.dtype == torch.float64:
+            y = y.float()
         if precise and not os.environ.get("FREETOKEN_RESIDUAL_FP32"):
             return y.to(x.dtype)
         return y

@@ -48,6 +48,8 @@ _DECODE_MARLIN_DEEPK_THRESHOLD = 2048
 
 
 def _tl_dtype(dt: torch.dtype):
+    if dt == torch.float64:
+        return tl.float64
     if dt == torch.bfloat16:
         return tl.bfloat16
     if dt == torch.float16:
@@ -348,6 +350,9 @@ def prefill_gemm(
         triton.cdiv(EM, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]),
     )
     cfg = dict(cfg)
+    if c.dtype == torch.float64:
+        # Keep reduction chunks aligned when the 640-wide intermediate is split in two.
+        cfg["BLOCK_SIZE_KB"] = 32
     fast = cfg.pop("FAST_DECODE", 0)
     if K % 8:
         fast = 0

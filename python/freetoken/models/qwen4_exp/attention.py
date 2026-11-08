@@ -14,6 +14,7 @@ norm weights travel with the call (:class:`QSAIndexerInputs`).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
@@ -171,8 +172,16 @@ class Qwen4ExpAttention(BaseOP):
         gate = qg[..., self.head_dim :].reshape(-1, self._local_qo_dim)
         k = k.contiguous().view(-1, self._local_num_kv, self.head_dim)
         v = v.contiguous()
-        self.q_norm.forward_inplace(q)
-        self.k_norm.forward_inplace(k)
+        if os.environ.get("FREETOKEN_STABLE_ATTENTION"):
+            from freetoken.kernel.triton.norm import gemma_rmsnorm
+
+            # Sharding heads must not change the norm's reduction layout.
+            for value, norm, heads in ((q, self.q_norm, self.num_q), (k, self.k_norm, self.num_kv)):
+                flat = value.view(-1, self.head_dim)
+                gemma_rmsnorm(flat, norm.weight, norm.eps, out=flat, tuning_rows=x.shape[0] * heads)
+        else:
+            self.q_norm.forward_inplace(q)
+            self.k_norm.forward_inplace(k)
         q, k = self.rotary.forward(
             batch.get_attn_positions(), q.view(-1, self._local_qo_dim), k.view(-1, self._local_kv_dim)
         )
