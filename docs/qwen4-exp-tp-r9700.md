@@ -16,12 +16,7 @@ checkpoints, quantized dense projections, CPU/hybrid experts, speculative
 decoding, other TP degrees, and NVIDIA hardware have not been qualified by this
 experiment. Cross-TP text and logit equality remain unresolved in general.
 
-The v2 follow-up records **100/100 exact greedy text pairs**, up from 74/100.
-Both TP modes use the new profile. It changes 35/100 original TP1 answers;
-V2 TP2 matches the original V1 TP1 text in 65/100 cases. Strict known-answer/
-format checks fall from 35/42 to 34/42 per mode, and blinded quality ratings
-slightly favor V1. This is measured TP agreement, not a demonstrated answer-
-quality gain. The settings remain experimental and disabled by default.
+The audited 1,024-token follow-up records **100/100 exact V2 TP=1/TP=2 text pairs**, compared with 77/100 for V1 on the same revised prompts. V2 strict checks pass 38/42 at TP=1 and 38/42 at TP=2. Prompt specificity, tokenizer normalization, completion limits and the judging rubric were audited before the final run. The historical Unicode-copy failure had an invalid answer key under NFC input normalization and is corrected explicitly below. Output agreement remains separate from answer quality; the precision switches remain experimental and disabled by default.
 
 ## Changes
 
@@ -98,8 +93,8 @@ PYTHONPATH=python python -m freetoken.cli serve \
 Use `--tp-size 1` for TP=1. To reproduce v1, unset the two v2 additions.
 For the main baseline unset all seven precision variables. Main at `14119b8`
 rejects Qwen4 TP=2; there is no main TP=2 performance baseline. Requests use the frozen chat-templated prompts via `/v1/completions`,
-`temperature=0`, `top_k=1`, `top_p=1`, no penalties and `max_tokens=128`.
-The prompt manifest preserves exact text and token counts.
+`temperature=0`, `top_k=1`, `top_p=1`, no penalties and `max_tokens=128` in the historical runs. The audited v3 rerun below uses `max_tokens=1024`.
+The prompt manifests preserve exact text and token counts.
 
 Building with the older local HIP SDK required
 `CFLAGS=-DhipStreamWriteValueDefault=0` and
@@ -303,3 +298,131 @@ source hashes and test logs. Large NumPy logit/layer arrays remain local and
 are represented by hashes; weights, authentication data and raw Codex event
 logs are excluded. Other hardware, communication backends and checkpoints
 remain unqualified by this experiment.
+
+## Audited prompts and 1,024-token rerun
+
+The entire 100-prompt matrix was rerun at cleaned commit `4aed3f5c7ae3054fb3813de304ef2b820c804642`,
+with identical hashes for all 503 Python engine files in all four configurations.
+V1 enables the original five precision flags; V2 adds FP64 reductions and stable attention.
+Each configuration runs 100 uncached core requests and ten cache-repeat attempts:
+**440 inference responses**, followed by **400 blinded evaluations**. No engine code changed for this rerun.
+
+A fresh-context agent first audited all 100 user requests without seeing outputs, scores,
+answer keys or the conversation. It identified 17 material ambiguities in the original set.
+After revision, another fresh-context audit reviewed the exact decoded user turns and found
+a remaining long-context shortcut: supplied formulas allowed record retrieval to be bypassed.
+The formulas were removed, structural validation was specified, and the final delta was
+independently verified. The final audit has no unresolved material finding.
+Arithmetic keys were independently recomputed. All 100 rendered inputs round-trip through
+the checkpoint tokenizer exactly; the final user-turn SHA256 is
+`008c85a8b27c24b2dd163b6f29f284d7f771ef4e45c6f0f9fa05111f2045dbbc`.
+
+The tokenizer normalizes input to NFC. The historical `unicode-preserve` key required
+NFD `e` plus a combining accent even though the model received precomposed `é`.
+That historical failure must be excluded: the previously reported V1 35/42 and V2 34/42
+become **35/41 and 34/41 valid cases**. The old archives remain unchanged.
+The new cohort uses an NFC-stable payload and corrected key, retaining 42 checks;
+the other 41 keys are unchanged. An initial revised attempt was stopped when this issue
+was found; its partial responses are excluded from the final cohort and preserved locally.
+
+Requests retain the same greedy settings and explicit `enable_thinking=False` chat template.
+The rendered generation prefix ends with an empty closed think block. `/v1/completions`
+returns raw delivered text, with the reasoning parser off; no generated text is stripped
+as inferred thinking. Raw SSE records reconstruct all 440 saved outputs exactly.
+A cap-only check of the eight historical strict failures, using
+their original prompts, found seven unchanged natural-stop answers. The fraction answer
+continued from 128 to 381 tokens and reached 29/36, but still violated the answer-only format.
+The larger cap matters for completion; it does not explain all historical failures.
+
+| Configuration | Exact TP pairs | Strict passes | Capped core responses | Largest output, tokens |
+| --- | ---: | ---: | ---: | ---: |
+| V1-TP1 | 77/100 | 38/42 | 0/100 | 317 |
+| V1-TP2 | 77/100 | 38/42 | 0/100 | 266 |
+| V2-TP1 | 100/100 | 38/42 | 0/100 | 615 |
+| V2-TP2 | 100/100 | 38/42 | 0/100 | 615 |
+
+V2 changes 23/100 TP=1 texts relative to V1. V2 TP=2 matches the V1 TP=1 text in 77/100 cases. The 100/100 agreement compares TP modes with the same V2 profile enabled in both.
+
+The shared remaining fixed-check failures are delivered content errors, not cutoffs:
+
+| Case | Expected | V1 TP1 / TP2 | V2 TP1 / TP2 |
+| --- | --- | --- | --- |
+| `fraction-sum` | `29/36` | `41/36` / `41/36` | `13/36` / `13/36` |
+| `modular-power` | `3` | `9` / `9` | `9` / `9` |
+| `weighted-average` | `8` | `7` / `7` | `7` / `7` |
+| `quoted-instruction` | `6` | `5` / `5` | `5` / `5` |
+
+All fixed-check failures, with prompts, expected values and all four actual outputs,
+are retained in `all-fixed-check-failures.json` and the matching HTML catalog in the archive.
+Fixed checks assess 42 specified answers/formats; the judges assess all 100 requests.
+The revised contracts accept equivalent numeric spellings for the weighted average and
+enforce the explicitly requested ordering/spacing in two other cases. Legacy checker
+totals are retained too. JSON fences and altered Unicode output remain failures.
+
+For the 60 short prompts with identical delivered text, token count and finish reason in all four configurations:
+
+| Configuration | TTFT p50 / p95, s | Request p50 / p95, s | Decode p50 / p95, ms/token | Decode p50, tok/s |
+| --- | ---: | ---: | ---: | ---: |
+| V1-TP1 | 11.133 / 11.230 | 12.004 / 16.632 | 75.746 / 152.826 | 13.203 |
+| V1-TP2 | 5.819 / 5.903 | 6.512 / 10.447 | 54.775 / 63.215 | 18.257 |
+| V2-TP1 | 11.134 / 11.223 | 12.027 / 16.828 | 78.929 / 154.156 | 12.673 |
+| V2-TP2 | 5.825 / 5.911 | 6.550 / 10.808 | 59.179 / 67.934 | 16.898 |
+
+Startup-to-healthy seconds, kept separate from request latency: V1-TP1 70.074, V1-TP2 68.071, V2-TP1 70.071, V2-TP2 66.078.
+Resolved expert slots per rank / KV pages: V1-TP1 6,824 / 256, V1-TP2 15,652 / 256, V2-TP1 6,824 / 256, V2-TP2 15,652 / 256.
+
+This is one sequential pass, ordered V2 TP2, V1 TP2, V1 TP1, V2 TP1, with existing
+disk/JIT caches and no timed warmup phase. The same-output subset controls delivered
+workload, but order and cache state remain possible influences. Auto expert cache
+residency differs between TP modes. Decode percentiles summarize per-request means;
+SSE chunk arrival gaps are retained separately and are not individual GPU token times.
+All 440 timing rows, long-input and cache-hit distributions, resource observations and
+idle preflights are included. ComfyUI was observed running or queued in 0/517 sampled checks; 0 observations failed.
+
+| Configuration | Actual cache hits | Cold/repeat exact matches | Exact or equal JSON values | Repeat fixed checks |
+| --- | ---: | ---: | ---: | ---: |
+| V1-TP1 | 10/10 | 9/10 | 9/10 | 9/9 |
+| V1-TP2 | 10/10 | 9/10 | 9/10 | 9/9 |
+| V2-TP1 | 10/10 | 9/10 | 10/10 | 9/9 |
+| V2-TP2 | 10/10 | 9/10 | 10/10 | 9/9 |
+
+The V1 cold/repeat differences are in the final validation explanation; the requested
+warehouse/quantity/checksum fields stay unchanged. The V2 repeat difference preserves
+the parsed JSON values. Every repeated fixed-answer lookup passes in all four modes.
+
+The judging rubric was independently audited before any new evaluations. It separates
+correctness from completeness/format, prevents double counting, defines partial-answer
+handling and semantic-difference classes, and does not penalize a length flag by itself.
+Each comparison has 100 forward evaluations, then 100 in reversed sample and A/B order,
+using `codex exec`, `gpt-6.1-terra`, `max` reasoning and at most 20 concurrent calls.
+Judges see the original request, response texts and finish reasons; source identities
+and performance data are hidden. Both comparison sets use this same audited cohort.
+
+| Comparison | Correctness, left / right | Instruction/completeness, left / right | Semantic similarity |
+| --- | ---: | ---: | ---: |
+| V1 TP1 / V2 TP1 | 3.595 / 3.605 | 3.970 / 3.970 | 3.755 |
+| V2 TP1 / V2 TP2 | 3.630 / 3.630 | 3.965 / 3.965 | 4.000 |
+
+Across both presentations, profile correctness preferences have 93 ties, 2 favoring V1 and 3 favoring V2; 2 differ between presentations. All scores use 0-4 anchors.
+
+Accepted evaluations / actual CLI invocations / identical-output control errors: profile-quality: 200 / 200 / 0; tp-quality: 200 / 200 / 0.
+Model judgments are secondary evidence. One evaluation per presentation confounds order
+effects with judge variance. New prompts, a larger cap and a revised rubric prevent
+direct quality-score comparisons with the historical cohort. This purpose-built set
+does not establish general capability or independent reference-engine accuracy.
+
+All 69 existing targeted engine checks passed on the same source in this task:
+54 configuration/weight checks and 15 precision-path checks. Their actual command and
+result logs are retained; they were not redundantly repeated after wording-only edits.
+A local launch without the ROCm activation environment failed before any response;
+the failure log is retained, then the full matrix used the corrected launch environment.
+
+The report formatter was corrected to display an empty differing-output group, and
+historical subset labels were removed. No inference or judging call was repeated;
+numeric results are unchanged. Original scripts and a recovery receipt are archived.
+
+The [v3 evidence archive](../benchmarks/evidence/qwen4-tp-r9700-v3.tar.gz) includes
+all frozen prompts, audits, corrected-key provenance, 440 responses, 400 accepted
+judgments, every invocation receipt, timing/SSE data, source/library hashes and logs.
+Its manifest verifies every payload. Weights, credentials and raw Codex CLI events
+are omitted. All profiles remain opt-in, and the scope limitations above still apply.
