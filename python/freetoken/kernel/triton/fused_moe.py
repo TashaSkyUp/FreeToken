@@ -140,7 +140,7 @@ def moe_sum_reduce_kernel(
     offs_dim = dim_start + tl.arange(0, BLOCK_DIM)
 
     for token_index in range(token_start, token_end):
-        accumulator = tl.zeros((BLOCK_DIM,), dtype=tl.float32)
+        accumulator = tl.zeros((BLOCK_DIM,), dtype=tl.float64 if input_ptr.dtype.element_ty == tl.float64 else tl.float32)
         input_t_ptr = input_ptr + token_index * input_stride_0 + offs_dim
         for i in tl.range(0, topk_num, num_stages=NUM_STAGE):
             tmp = tl.load(input_t_ptr + i * input_stride_1, mask=offs_dim < dim_end, other=0.0)

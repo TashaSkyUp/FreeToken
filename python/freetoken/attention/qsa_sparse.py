@@ -105,6 +105,7 @@ class QSASparseAttnBackend(BaseAttnBackend):
         args = config.qwen4_args
         assert args is not None, "qsa_sparse backend needs ModelConfig.qwen4_args"
         self.head_dim = config.head_dim
+        self._global_num_kv_heads = config.num_kv_heads
         self.index_heads = args.index_n_heads
         self.token_topk = args.index_budget
         self.kvcache = get_global_ctx().kv_cache
@@ -307,6 +308,8 @@ class QSASparseAttnBackend(BaseAttnBackend):
             md.block_table,
             md.token_to_req,
             torch.empty_like(q),
+            tuning_num_kv_heads=(self._global_num_kv_heads
+                                if os.environ.get("FREETOKEN_STABLE_ATTENTION") else None),
         )
 
     def _plan_index_writes(self, md: QSASparseMetadata, batch: Batch) -> None:

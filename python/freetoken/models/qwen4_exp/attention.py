@@ -14,14 +14,22 @@ norm weights travel with the call (:class:`QSAIndexerInputs`).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 import torch
 from freetoken.core import get_global_ctx
-from freetoken.layers import BaseOP, GemmaPlusOneRMSNorm, LinearColParallelMerged, LinearReplicated
+from freetoken.distributed import get_tp_info
+from freetoken.layers import (
+    BaseOP,
+    GemmaPlusOneRMSNorm,
+    LinearColParallelMerged,
+    LinearOProj,
+    LinearReplicated,
+)
 from freetoken.layers.rotary import get_rope
-from freetoken.utils import nvtx_annotate
+from freetoken.utils import div_even, nvtx_annotate
 
 if TYPE_CHECKING:
     from freetoken.core import Batch
@@ -123,12 +131,22 @@ class Qwen4ExpAttention(BaseOP):
         self.head_dim = config.head_dim
         self.qo_attn_dim = self.num_q * self.head_dim
         self.kv_attn_dim = self.num_kv * self.head_dim
-        self._qkv_split = [self.qo_attn_dim * 2, self.kv_attn_dim, self.kv_attn_dim]
+        # Keep the indexer replicated so every rank selects the same sparse blocks.
+        tp = get_tp_info()
+        self._local_num_q = div_even(self.num_q, tp.size)
+        self._local_num_kv = div_even(self.num_kv, tp.size, allow_replicate=True)
+        self._local_qo_dim = self._local_num_q * self.head_dim
+        self._local_kv_dim = self._local_num_kv * self.head_dim
+        self._qkv_split = [self._local_qo_dim * 2, self._local_kv_dim, self._local_kv_dim]
         self.qkv_proj = LinearColParallelMerged(
-            config.hidden_size, self._qkv_split, has_bias=False,
+            config.hidden_size,
+            [self.qo_attn_dim * 2, self.kv_attn_dim, self.kv_attn_dim],
+            has_bias=False,
+            local_output_sizes=self._qkv_split,
             quant_config=config.quant, prefix=f"{prefix}.qkv_proj",
         )
-        self.o_proj = LinearReplicated(
+        # Each rank produces its own attention heads; reduce their output projections.
+        self.o_proj = LinearOProj(
             self.qo_attn_dim, config.hidden_size, has_bias=False,
             quant_config=config.quant, prefix=f"{prefix}.o_proj",
         )
@@ -149,21 +167,29 @@ class Qwen4ExpAttention(BaseOP):
     @nvtx_annotate("QSA")
     def forward(self, x: torch.Tensor, batch: Batch) -> torch.Tensor:
         qg, k, v = self.qkv_proj.forward(x).split(self._qkv_split, dim=-1)
-        qg = qg.view(-1, self.num_q, self.head_dim * 2)
+        qg = qg.view(-1, self._local_num_q, self.head_dim * 2)
         q = qg[..., : self.head_dim].contiguous()
-        gate = qg[..., self.head_dim :].reshape(-1, self.qo_attn_dim)
-        k = k.contiguous().view(-1, self.num_kv, self.head_dim)
+        gate = qg[..., self.head_dim :].reshape(-1, self._local_qo_dim)
+        k = k.contiguous().view(-1, self._local_num_kv, self.head_dim)
         v = v.contiguous()
-        self.q_norm.forward_inplace(q)
-        self.k_norm.forward_inplace(k)
+        if os.environ.get("FREETOKEN_STABLE_ATTENTION"):
+            from freetoken.kernel.triton.norm import gemma_rmsnorm
+
+            # Sharding heads must not change the norm's reduction layout.
+            for value, norm, heads in ((q, self.q_norm, self.num_q), (k, self.k_norm, self.num_kv)):
+                flat = value.view(-1, self.head_dim)
+                gemma_rmsnorm(flat, norm.weight, norm.eps, out=flat, tuning_rows=x.shape[0] * heads)
+        else:
+            self.q_norm.forward_inplace(q)
+            self.k_norm.forward_inplace(k)
         q, k = self.rotary.forward(
-            batch.get_attn_positions(), q.view(-1, self.qo_attn_dim), k.view(-1, self.kv_attn_dim)
+            batch.get_attn_positions(), q.view(-1, self._local_qo_dim), k.view(-1, self._local_kv_dim)
         )
         index = self.indexer.forward(x)
         o = get_global_ctx().attn_backend.qsa_forward(
-            q.view(-1, self.num_q, self.head_dim), k, v, index, self.layer_id, batch
+            q.view(-1, self._local_num_q, self.head_dim), k, v, index, self.layer_id, batch
         )
-        gated = o.reshape(-1, self.qo_attn_dim) * torch.sigmoid(gate)
+        gated = o.reshape(-1, self._local_qo_dim) * torch.sigmoid(gate)
         return self.o_proj.forward(gated)
 
 

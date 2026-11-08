@@ -3,8 +3,9 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 from freetoken.core import get_global_ctx
+from freetoken.distributed import get_tp_info
 from freetoken.kernel.causal_conv1d import causal_conv1d_decode, causal_conv1d_varlen, causal_conv1d_verify
-from freetoken.layers import BaseOP, GatedRMSNorm, LinearColParallelMerged, LinearReplicated
+from freetoken.layers import BaseOP, GatedRMSNorm, LinearColParallelMerged, LinearOProj
 from freetoken.layers.quantization import QuantConfig
 
 
@@ -42,6 +43,10 @@ class GatedDeltaNet(BaseOP):
         assert head_k_dim == head_v_dim, (
             f"GatedDeltaNet requires head_k_dim == head_v_dim, got {head_k_dim} != {head_v_dim}"
         )
+        tp_size = get_tp_info().size
+        assert num_k_heads % tp_size == 0 and num_v_heads % tp_size == 0
+        num_k_heads //= tp_size
+        num_v_heads //= tp_size
         self.num_k_heads = num_k_heads
         self.num_v_heads = num_v_heads
         self.head_k_dim = head_k_dim
@@ -56,6 +61,8 @@ class GatedDeltaNet(BaseOP):
         )
 
         self._in_proj_split = [self.conv_dim, self.value_dim, num_v_heads, num_v_heads]
+        if tp_size > 1 and self._split_in_proj:
+            raise NotImplementedError("Qwen4 TP reproduction supports BF16 GDN projections only")
         if self._split_in_proj:
             self.in_proj_qkvz = LinearColParallelMerged(
                 hidden_size, [self.conv_dim, self.value_dim], has_bias=False,
@@ -68,7 +75,7 @@ class GatedDeltaNet(BaseOP):
         else:
             # Fused input projection (one GEMM instead of four): qkv | z | b | a.
             self.in_proj = LinearColParallelMerged(
-                hidden_size, self._in_proj_split, has_bias=False,
+                hidden_size, [n * tp_size for n in self._in_proj_split], has_bias=False,
                 quant_config=quant_config, prefix=f"{prefix}.in_proj",
             )
         self.conv1d = _DepthwiseConv1d(self.conv_dim, conv_kernel_size)
@@ -79,8 +86,8 @@ class GatedDeltaNet(BaseOP):
         self.dt_bias = torch.empty(num_v_heads, dtype=torch.float32)
         self.A_log = torch.empty(num_v_heads, dtype=torch.float32)
         self.norm = GatedRMSNorm(head_v_dim, eps=rms_norm_eps, activation=output_gate)
-        self.out_proj = LinearReplicated(
-            self.value_dim, hidden_size, has_bias=False,
+        self.out_proj = LinearOProj(
+            self.value_dim * tp_size, hidden_size, has_bias=False,
             quant_config=quant_config, prefix=f"{prefix}.out_proj",
         )
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Dict
 
 import torch
@@ -143,7 +144,15 @@ class ParallelLMHead(VocabParallelEmbedding):
         if self.tied_embedding is not None:
             logits = self.tied_embedding.quant_method.logits(self.tied_embedding, x, self.bias)
         else:
-            logits = self.quant_method.apply(self, x)
+            if (
+                os.environ.get("FREETOKEN_TP_PRECISE")
+                and self.weight.dtype == x.dtype == torch.bfloat16
+            ):
+                from freetoken.kernel.triton.stable_linear import fp32_linear
+
+                logits = fp32_linear(x, self.weight, self.bias)
+            else:
+                logits = self.quant_method.apply(self, x)
         if self.tp_size == 1:
             return logits
         input_shape = logits.shape

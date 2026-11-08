@@ -221,7 +221,7 @@ def _decode_nvfp4_marlin_kernel(
     offs_kw = tl.arange(0, BLOCK_SIZE_KW)
     offs_kh = tl.arange(0, BLOCK_SIZE_KW // 2)
     K_WORDS = K // 8
-    partial = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_KW), dtype=tl.float32)
+    partial = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_KW), dtype=tl.float64 if compute_type == tl.float64 else tl.float32)
 
     p_base = packed_ptr + slot * stride_pe + offs_n[:, None] * stride_pn
     s_base = scale_ptr + slot * stride_se + offs_n[:, None] * stride_sn
@@ -280,7 +280,10 @@ def _decode_nvfp4_marlin_kernel(
             acc_w += a5[None, :] * b5
             acc_w += a6[None, :] * b6
             acc_w += a7[None, :] * b7
-            partial += acc_w * scale
+            if compute_type == tl.float64:
+                partial += acc_w.to(tl.float64) * scale.to(tl.float64)
+            else:
+                partial += acc_w * scale
 
     accumulator = tl.sum(partial, axis=1)
     g = tl.load(global_ptr + slot * stride_ge + offs_n * stride_gn, mask=n_mask, other=0.0).to(tl.float32)
@@ -429,7 +432,7 @@ def _prefill_nvfp4_moe_kernel(
     else:
         s_ptrs = scale_ptr + slot * stride_se + offs_bn[:, None] * stride_sn + offs_sb[None, :] * stride_sblk
 
-    accumulator = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_M), dtype=tl.float32)
+    accumulator = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_M), dtype=tl.float64 if compute_type == tl.float64 else tl.float32)
     K_BYTES = K // 2
     # rows past N belong to the next slot; their outputs are masked on store
     w_row = (slot * N + pid_n * BLOCK_SIZE_N).to(tl.int32)
@@ -493,7 +496,10 @@ def _prefill_nvfp4_moe_kernel(
             # interleave back to k = 2 * byte + {0, 1} so one dot covers the K step
             w = tl.reshape(tl.join(w_lo, w_hi), (BLOCK_SIZE_N, 2 * BLOCK_SIZE_KB))
         xt = tl.load(xt_ptrs, mask=k_mask[:, None] & token_mask[None, :], other=0.0)
-        accumulator = tl.dot(w.to(xt.dtype), xt, accumulator)
+        if compute_type == tl.float64:
+            accumulator += tl.dot(w.to(xt.dtype), xt).to(tl.float64)
+        else:
+            accumulator = tl.dot(w.to(xt.dtype), xt, accumulator)
         xt_ptrs += 2 * BLOCK_SIZE_KB * stride_ak
         if not USE_TMA:
             p_ptrs += (KW if WORDS else BLOCK_SIZE_KB) * stride_pkb

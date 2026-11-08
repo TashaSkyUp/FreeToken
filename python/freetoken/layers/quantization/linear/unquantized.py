@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import torch
@@ -21,6 +22,14 @@ class TorchLinearKernel(LinearKernel):
         if w.dtype != x.dtype:
             w = w.to(x.dtype)
             b = b.to(x.dtype) if b is not None else None
+        if (
+            os.environ.get("FREETOKEN_STABLE_LINEAR")
+            and x.dtype in (torch.bfloat16, torch.float16)
+            and x.ndim == 2
+        ):
+            from freetoken.kernel.triton.stable_linear import linear
+
+            return linear(x, w, b)
         return F.linear(x, w, b)
 
 
